@@ -1,0 +1,84 @@
+name: Deploy share-preview
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    environment: share-preview-production
+
+    env:
+      SFTP_HOST: ${{ vars.SHARE_PREVIEW_SFTP_HOST }}
+      SFTP_PORT: ${{ vars.SHARE_PREVIEW_SFTP_PORT }}
+      SFTP_USER: ${{ vars.SHARE_PREVIEW_SFTP_USER }}
+      SFTP_PATH: ${{ vars.SHARE_PREVIEW_SFTP_PATH }}
+      SFTP_PRIVATE_KEY: ${{ secrets.SHARE_PREVIEW_SFTP_PRIVATE_KEY }}
+      SFTP_KEY_PASSPHRASE: ${{ secrets.SHARE_PREVIEW_SFTP_PRIVATE_KEY_PASSPHRASE }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install deployment tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp php-cli
+
+      - name: Check PHP syntax
+        run: |
+          find . \
+            -type f \
+            -name '*.php' \
+            -not -path './.git/*' \
+            -print0 \
+            | xargs -0 -n1 php -l
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          printf '%s\n' "$SFTP_PRIVATE_KEY" > ~/.ssh/share-preview
+          chmod 600 ~/.ssh/share-preview
+
+          if [ -n "$SFTP_KEY_PASSPHRASE" ]; then
+            ssh-keygen \
+              -p \
+              -P "$SFTP_KEY_PASSPHRASE" \
+              -N "" \
+              -f ~/.ssh/share-preview
+          fi
+
+          ssh-keyscan \
+            -p "$SFTP_PORT" \
+            -H "$SFTP_HOST" \
+            >> ~/.ssh/known_hosts
+
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy via SFTP
+        run: |
+          lftp -c "
+            set sftp:connect-program \"ssh -a -x \
+              -i ~/.ssh/share-preview \
+              -o BatchMode=yes \
+              -p $SFTP_PORT\";
+
+            open sftp://$SFTP_USER@$SFTP_HOST;
+
+            mirror --reverse \
+              --verbose \
+              --exclude-glob .git* \
+              --exclude-glob .github/ \
+              --exclude README.md \
+              --exclude LICENSE \
+              --exclude SECURITY.md \
+              ./ \"$SFTP_PATH\";
+          "
