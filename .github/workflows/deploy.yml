@@ -29,7 +29,7 @@ jobs:
       - name: Install deployment tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y lftp php-cli
+          sudo apt-get install -y php-cli rsync
 
       - name: Check PHP syntax
         run: |
@@ -73,30 +73,29 @@ jobs:
             -o UpdateHostKeys=no \
             "$SFTP_USER@$SFTP_HOST"
 
+      - name: Prepare deployment
+        run: |
+          rm -rf /tmp/share-preview-deploy
+          mkdir -p /tmp/share-preview-deploy
+
+          rsync -a \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='README.md' \
+            --exclude='LICENSE' \
+            --exclude='SECURITY.md' \
+            ./ /tmp/share-preview-deploy/
+
       - name: Deploy via SFTP
         run: |
-          lftp -c "
-            set cmd:fail-exit yes;
-            set net:timeout 15;
-            set net:max-retries 1;
-            set net:reconnect-interval-base 1;
-            set net:reconnect-interval-multiplier 1;
-
-            set sftp:connect-program \"ssh -a -x \
-              -i ~/.ssh/share-preview \
-              -o BatchMode=yes \
-              -o ConnectTimeout=15 \
-              -o UpdateHostKeys=no \
-              -p $SFTP_PORT\";
-
-            open sftp://$SFTP_USER@$SFTP_HOST;
-
-            mirror --reverse \
-              --verbose \
-              --exclude-glob .git* \
-              --exclude-glob .github/ \
-              --exclude README.md \
-              --exclude LICENSE \
-              --exclude SECURITY.md \
-              ./ \"$SFTP_PATH\";
-          "
+          sftp \
+            -i ~/.ssh/share-preview \
+            -P "$SFTP_PORT" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o UpdateHostKeys=no \
+            "$SFTP_USER@$SFTP_HOST" <<EOF
+          cd $SFTP_PATH
+          put -r /tmp/share-preview-deploy/*
+          quit
+          EOF
