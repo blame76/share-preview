@@ -63,12 +63,30 @@ jobs:
 
           chmod 600 ~/.ssh/known_hosts
 
+      - name: Test SFTP connection
+        run: |
+          printf 'pwd\nquit\n' | sftp \
+            -i ~/.ssh/share-preview \
+            -P "$SFTP_PORT" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o UpdateHostKeys=no \
+            "$SFTP_USER@$SFTP_HOST"
+
       - name: Deploy via SFTP
         run: |
           lftp -c "
+            set cmd:fail-exit yes;
+            set net:timeout 15;
+            set net:max-retries 1;
+            set net:reconnect-interval-base 1;
+            set net:reconnect-interval-multiplier 1;
+
             set sftp:connect-program \"ssh -a -x \
               -i ~/.ssh/share-preview \
               -o BatchMode=yes \
+              -o ConnectTimeout=15 \
+              -o UpdateHostKeys=no \
               -p $SFTP_PORT\";
 
             open sftp://$SFTP_USER@$SFTP_HOST;
