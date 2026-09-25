@@ -8,17 +8,37 @@ $selfUrl = sp_self_url();
 $error = null;
 $result = null;
 $inputUrl = '';
+$requestMethod = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $inputUrl = trim((string)($_POST['url'] ?? ''));
-
-    if (!sp_environment_ready()) {
-        $error = 'Auf diesem Server fehlt eine notwendige PHP-Funktion. Öffne zuerst den Selfcheck.';
+if (!in_array($requestMethod, ['GET', 'POST'], true)) {
+    http_response_code(405);
+    header('Allow: GET, POST');
+    $error = 'Diese Anfrage-Methode wird nicht unterstützt.';
+} elseif ($requestMethod === 'POST') {
+    $contentLength = (int)($_SERVER['CONTENT_LENGTH'] ?? 0);
+    if ($contentLength > SHARE_PREVIEW_MAX_REQUEST_BYTES) {
+        http_response_code(413);
+        $error = 'Die Anfrage ist zu groß. Bitte gib eine kürzere URL ein.';
     } else {
-        try {
-            $result = sp_analyze_url($inputUrl);
-        } catch (Throwable $e) {
-            $error = $e->getMessage();
+        $submittedUrl = $_POST['url'] ?? '';
+        if (!is_string($submittedUrl)) {
+            $error = 'Die URL muss als einzelner Textwert übermittelt werden.';
+        } else {
+            $inputUrl = trim($submittedUrl);
+        }
+
+        if ($error === null) {
+            if (!sp_environment_ready()) {
+                $error = 'Auf diesem Server fehlt eine notwendige PHP-Funktion. Öffne zuerst den Selfcheck.';
+            } else {
+                try {
+                    $result = sp_analyze_url($inputUrl);
+                } catch (RuntimeException $e) {
+                    $error = $e->getMessage();
+                } catch (Throwable) {
+                    $error = 'Beim Prüfen ist ein unerwarteter interner Fehler aufgetreten.';
+                }
+            }
         }
     }
 }
@@ -69,7 +89,7 @@ function display_host(string $url): string
         <form method="post" class="url-form" novalidate>
             <label for="url">URL</label>
             <div class="input-row">
-                <input id="url" name="url" type="url" inputmode="url" autocomplete="url" placeholder="https://example.com/artikel" value="<?= sp_h($inputUrl) ?>" required>
+                <input id="url" name="url" type="url" inputmode="url" autocomplete="url" maxlength="<?= SHARE_PREVIEW_MAX_URL_BYTES ?>" placeholder="https://example.com/artikel" value="<?= sp_h($inputUrl) ?>" required>
                 <button type="submit">Prüfen</button>
             </div>
         </form>
@@ -198,7 +218,9 @@ function display_host(string $url): string
 <footer>
     <span>share-preview <?= sp_h(SHARE_PREVIEW_VERSION) ?></span>
     <span>·</span>
-    <a href="https://blame76.com/">blame76.com</a>
+    <a href="datenschutz.html">Datenschutz</a>
+    <span>·</span>
+    <a href="https://github.com/blame76/share-preview">GitHub</a>
 </footer>
 
 <div class="toast" data-toast hidden></div>

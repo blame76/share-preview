@@ -7,5 +7,6 @@ Wenn du eine Sicherheitslücke findest, veröffentliche bitte keine funktioniere
 ## Bekannte Grenzen
 
 - Ein öffentlicher Webdienst kann absichtlich oft aufgerufen werden. Diese Version speichert absichtlich keinen Zustand und enthält deshalb kein serverseitiges Rate-Limit.
+- Bei Bedarf kann zusätzlich ein Rate-Limit auf Webserver- oder Reverse-Proxy-Ebene eingerichtet werden.
 - DNS- und Netzwerkregeln des Hosters können legitime Seiten blockieren.
 - Das Tool simuliert Social-Previews anhand veröffentlichter Meta-Tags. Plattformen können zusätzlich eigene Caches, Crawler-Regeln, Bildverarbeitung und Darstellungslogik verwenden.

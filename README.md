@@ -12,6 +12,7 @@ Ein kleines, zustandsloses Werkzeug zum Prüfen von Social-Share-Metadaten.
 - kein Framework
 - kein Build-Step
 - kein Anwendungs-Cache
+- keine zusätzlichen Runtime-Abhängigkeiten
 
 Die Oberfläche besteht aus HTML/CSS/Vanilla JS. PHP lädt die Zielseite serverseitig, liest die Meta-Tags und verwirft den Inhalt nach der Anfrage wieder.
 
@@ -44,6 +45,8 @@ Empfohlen:
 
 `intl` ist optional. Es wird nur benötigt, wenn internationale Domainnamen direkt mit Unicode-Zeichen eingegeben werden sollen. Punycode funktioniert ohne `intl`.
 
+Die mitgelieferte `.htaccess` deaktiviert Directory Listing, schützt interne Dateien und setzt Security-/No-Cache-Header auch für statische Seiten. Sie verwendet nur relative Regeln und funktioniert deshalb unabhängig davon, in welchem Unterverzeichnis das Tool installiert wird.
+
 ## Was wird abgerufen?
 
 Pro Prüfung wird genau die eingegebene öffentliche URL geladen. Bis zu fünf HTTP-Weiterleitungen werden manuell verfolgt und vor jedem Abruf erneut geprüft.
@@ -71,15 +74,20 @@ Die Anwendung ist bewusst kein allgemeiner Proxy.
 
 - nur HTTP und HTTPS
 - nur Standard-Ports 80 und 443
+- URLs maximal 4096 Bytes
 - keine URLs mit Benutzername/Passwort
-- localhost, private und reservierte IP-Bereiche werden blockiert
-- DNS wird vor jedem Abruf geprüft
+- localhost, private, link-lokale und IANA-Sonder-/Reservierungsbereiche werden für IPv4 und IPv6 blockiert
+- sämtliche DNS-Antworten werden vor jedem Abruf geprüft; eine einzige nichtöffentliche Antwort blockiert das Ziel
 - Ziel-IP wird für den Request gepinnt
+- die tatsächlich verwendete cURL-Ziel-IP wird nach dem Request erneut geprüft
 - Redirects werden einzeln validiert
 - maximal 5 Redirects
-- kurze Connect-/Gesamt-Timeouts
+- kurze Connect-Timeouts und ein gemeinsames Gesamt-Zeitbudget für die gesamte Redirect-Kette
 - HTML maximal 2 MB
 - Vorschaubild maximal 3 MB
+- Vorschaubilder nur als JPEG, PNG, GIF, WebP oder AVIF mit passender Dateisignatur; kein SVG
+- Antwort-Header maximal 64 KiB
+- TLS- und Hostname-Prüfung sind ausdrücklich aktiv; Umgebungs-Proxys sind deaktiviert
 - kein Weiterreichen von Cookies oder Authorization-Headern
 - keine fremden Scripts, Fonts oder Tracker
 - Content Security Policy und weitere Basis-Header
@@ -89,6 +97,31 @@ Die Anwendung ist bewusst kein allgemeiner Proxy.
 Share Preview setzt für die eigene Antwort `no-store` / `no-cache` und speichert keine Ergebnisse.
 
 Die Anwendung sendet auch beim Abruf der Zielseite `Cache-Control: no-cache`. Ein vorgeschaltetes CDN oder Cache der **Zielseite** kann trotzdem selbst entscheiden, welche Version es ausliefert. Darauf hat Share Preview keinen Einfluss.
+
+## Datenschutz
+
+Die statische Seite `datenschutz.html` beschreibt die Datenverarbeitung des Werkzeugs und den technisch notwendigen Serverbetrieb. Share Preview selbst setzt keine Cookies, führt keine Sessions und speichert weder eingegebene URLs noch Prüfergebnisse. Daher gibt es bewusst kein Cookie- oder Consent-Banner.
+
+Die Anwendung legt keine eigenen Zugriffslogs an. Ob und wie lange der Webserver oder Hosting-Anbieter Verbindungsdaten protokolliert, muss anhand der tatsächlichen Hosting-Konfiguration geprüft werden.
+
+## Rate-Limit
+
+Version 0.1 enthält bewusst kein PHP-basiertes IP-Rate-Limit und speichert dafür keine IP-Adressen. Missbrauch wird zunächst durch URL-, Protokoll-, Port-, Redirect-, Zeit- und Größenlimits begrenzt.
+
+Bei Bedarf kann zusätzlich ein Rate-Limit auf Webserver- oder Reverse-Proxy-Ebene eingerichtet werden.
+
+## Tests
+
+Die Security-Tests benötigen keine zusätzlichen Pakete:
+
+```bash
+php tests/run.php
+find . -type f -name '*.php' -not -path './.git/*' -print0 | xargs -0 -n1 php -l
+```
+
+Die Tests prüfen insbesondere verbotene Schemes, lokale/private Ziele, IPv4-mapped IPv6, Credentials, Ports, URL-Länge, gemischte DNS-Antworten und Redirects auf private IPs.
+
+Es werden weder Composer noch npm, externe JavaScript-Bibliotheken, CDN-Ressourcen oder externe Fonts verwendet.
 
 ## Share-Button
 

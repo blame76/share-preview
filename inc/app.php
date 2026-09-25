@@ -3,18 +3,24 @@
 declare(strict_types=1);
 
 const SHARE_PREVIEW_VERSION = '0.1.0';
+const SHARE_PREVIEW_MAX_URL_BYTES = 4096;
+const SHARE_PREVIEW_MAX_REQUEST_BYTES = 16_384;
 const SHARE_PREVIEW_MAX_HTML_BYTES = 2_000_000;
 const SHARE_PREVIEW_MAX_IMAGE_BYTES = 3_000_000;
+const SHARE_PREVIEW_MAX_HEADER_BYTES = 65_536;
 const SHARE_PREVIEW_MAX_REDIRECTS = 5;
 const SHARE_PREVIEW_CONNECT_TIMEOUT = 5;
 const SHARE_PREVIEW_TOTAL_TIMEOUT = 10;
+const SHARE_PREVIEW_MAX_TITLE_BYTES = 512;
+const SHARE_PREVIEW_MAX_DESCRIPTION_BYTES = 4096;
+const SHARE_PREVIEW_MAX_META_URL_BYTES = 4096;
 
 function sp_send_common_headers(): void
 {
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
     header('Pragma: no-cache');
     header('Expires: 0');
-    header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'");
+    header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'none'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
     header('Referrer-Policy: no-referrer');
     header('X-Content-Type-Options: nosniff');
     header('X-Frame-Options: DENY');
@@ -28,7 +34,7 @@ function sp_environment_checks(): array
     $checks[] = [
         'label' => 'PHP-Version',
         'ok' => version_compare(PHP_VERSION, '8.1.0', '>='),
-        'detail' => 'Gefunden: PHP ' . PHP_VERSION . ' · benötigt: PHP 8.1 oder neuer.',
+        'detail' => version_compare(PHP_VERSION, '8.1.0', '>=') ? 'PHP 8.1 oder neuer ist verfügbar.' : 'Die installierte PHP-Version ist älter als PHP 8.1.',
         'help' => 'Stelle im Hosting-Menü für dieses Verzeichnis PHP 8.1 oder neuer ein.',
         'required' => true,
     ];
@@ -49,6 +55,15 @@ function sp_environment_checks(): array
         'required' => true,
     ];
 
+    $hasLibxml = extension_loaded('libxml') && defined('LIBXML_VERSION');
+    $checks[] = [
+        'label' => 'libxml / XML',
+        'ok' => $hasLibxml,
+        'detail' => $hasLibxml ? 'libxml ist verfügbar.' : 'Die PHP-Erweiterung libxml/XML fehlt.',
+        'help' => 'Aktiviere „libxml“ bzw. das XML-Paket deiner PHP-Installation. Es wird zum sicheren Einlesen der HTML-Metadaten benötigt.',
+        'required' => true,
+    ];
+
     $checks[] = [
         'label' => 'JSON',
         'ok' => extension_loaded('json'),
@@ -63,6 +78,23 @@ function sp_environment_checks(): array
         'ok' => $hasDns,
         'detail' => $hasDns ? 'DNS-Funktionen sind verfügbar.' : 'Weder dns_get_record() noch gethostbynamel() sind verfügbar.',
         'help' => 'Der Hoster muss DNS-Auflösung aus PHP erlauben. Share Preview prüft Zieladressen vor dem Abruf gegen interne/private Netze.',
+        'required' => true,
+    ];
+
+    $curlHasTls = false;
+    if (extension_loaded('curl') && function_exists('curl_version')) {
+        $curlInfo = curl_version();
+        $protocols = array_map('strtolower', is_array($curlInfo['protocols'] ?? null) ? $curlInfo['protocols'] : []);
+        $features = (int)($curlInfo['features'] ?? 0);
+        $curlHasTls = in_array('https', $protocols, true)
+            && defined('CURL_VERSION_SSL')
+            && (($features & CURL_VERSION_SSL) !== 0);
+    }
+    $checks[] = [
+        'label' => 'TLS-Unterstützung in cURL',
+        'ok' => $curlHasTls,
+        'detail' => $curlHasTls ? 'cURL kann HTTPS mit TLS abrufen.' : 'Die installierte cURL-Version meldet keine nutzbare HTTPS-/TLS-Unterstützung.',
+        'help' => 'Bitte den Hoster, PHP cURL mit HTTPS-/TLS-Unterstützung bereitzustellen. Ohne TLS können HTTPS-Zielseiten nicht sicher geprüft werden.',
         'required' => true,
     ];
 
@@ -95,7 +127,27 @@ function sp_normalize_input_url(string $input): string
         throw new RuntimeException('Bitte gib eine URL ein.');
     }
 
-    if (!preg_match('~^https?://~i', $url)) {
+    if (strlen($url) > SHARE_PREVIEW_MAX_URL_BYTES) {
+        throw new RuntimeException('Die URL ist zu lang. Erlaubt sind maximal ' . SHARE_PREVIEW_MAX_URL_BYTES . ' Bytes.');
+    }
+
+    if (preg_match('/[\x00-\x1F\x7F]/', $url) || str_contains($url, '\\')) {
+        throw new RuntimeException('Die URL enthält nicht erlaubte Steuer- oder Backslash-Zeichen.');
+    }
+
+    if (str_starts_with($url, '//')) {
+        $url = 'https:' . $url;
+    } elseif (preg_match('~^([a-z][a-z0-9+.-]*):~i', $url, $schemeMatch)) {
+        $explicitScheme = strtolower($schemeMatch[1]);
+        $looksLikeHostAndPort = str_contains($explicitScheme, '.')
+            && preg_match('~^\d+(?:[/?#]|$)~', substr($url, strlen($schemeMatch[0]))) === 1;
+        if (!in_array($explicitScheme, ['http', 'https'], true) && !$looksLikeHostAndPort) {
+            throw new RuntimeException('Erlaubt sind ausschließlich http:// und https:// URLs.');
+        }
+        if ($looksLikeHostAndPort) {
+            $url = 'https://' . $url;
+        }
+    } else {
         $url = 'https://' . $url;
     }
 
@@ -114,6 +166,9 @@ function sp_normalize_input_url(string $input): string
     }
 
     $host = strtolower(rtrim((string)$parts['host'], '.'));
+    if (str_starts_with($host, '[') && str_ends_with($host, ']')) {
+        $host = substr($host, 1, -1);
+    }
     if ($host === '' || $host === 'localhost' || str_ends_with($host, '.localhost') || str_ends_with($host, '.local')) {
         throw new RuntimeException('Lokale oder interne Adressen werden aus Sicherheitsgründen nicht abgerufen.');
     }
@@ -129,6 +184,18 @@ function sp_normalize_input_url(string $input): string
         $host = strtolower($ascii);
     }
 
+    $isIp = filter_var($host, FILTER_VALIDATE_IP) !== false;
+    if (!$isIp) {
+        if (strlen($host) > 253 || preg_match('/^[a-z0-9.-]+$/', $host) !== 1) {
+            throw new RuntimeException('Der Hostname der URL ist ungültig.');
+        }
+        foreach (explode('.', $host) as $label) {
+            if ($label === '' || strlen($label) > 63 || $label[0] === '-' || str_ends_with($label, '-')) {
+                throw new RuntimeException('Der Hostname der URL ist ungültig.');
+            }
+        }
+    }
+
     if (isset($parts['port']) && !in_array((int)$parts['port'], [80, 443], true)) {
         throw new RuntimeException('Aus Sicherheitsgründen werden nur die Standard-Ports 80 und 443 abgerufen.');
     }
@@ -140,25 +207,130 @@ function sp_normalize_input_url(string $input): string
     }
     $query = isset($parts['query']) ? '?' . $parts['query'] : '';
 
-    return $scheme . '://' . $host . $port . $path . $query;
+    $urlHost = filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? '[' . $host . ']' : $host;
+    $normalized = $scheme . '://' . $urlHost . $port . $path . $query;
+    if (strlen($normalized) > SHARE_PREVIEW_MAX_URL_BYTES) {
+        throw new RuntimeException('Die normalisierte URL ist zu lang. Erlaubt sind maximal ' . SHARE_PREVIEW_MAX_URL_BYTES . ' Bytes.');
+    }
+
+    return $normalized;
 }
 
 function sp_is_public_ip(string $ip): bool
 {
-    return filter_var(
-        $ip,
-        FILTER_VALIDATE_IP,
-        FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
-    ) !== false;
+    $packed = @inet_pton($ip);
+    if ($packed === false) {
+        return false;
+    }
+
+    if (strlen($packed) === 4) {
+        $blockedCidrs = [
+            '0.0.0.0/8',
+            '10.0.0.0/8',
+            '100.64.0.0/10',
+            '127.0.0.0/8',
+            '169.254.0.0/16',
+            '172.16.0.0/12',
+            '192.0.0.0/24',
+            '192.0.2.0/24',
+            '192.31.196.0/24',
+            '192.52.193.0/24',
+            '192.88.99.0/24',
+            '192.168.0.0/16',
+            '192.175.48.0/24',
+            '198.18.0.0/15',
+            '198.51.100.0/24',
+            '203.0.113.0/24',
+            '224.0.0.0/4',
+            '240.0.0.0/4',
+        ];
+    } else {
+        // Only current IPv6 global unicast is eligible; special-purpose ranges stay blocked.
+        if (!sp_ip_matches_cidr($packed, '2000::/3')) {
+            return false;
+        }
+        $blockedCidrs = [
+            '2001::/23',
+            '2001:db8::/32',
+            '2002::/16',
+            '2620:4f:8000::/48',
+            '3fff::/20',
+        ];
+    }
+
+    foreach ($blockedCidrs as $cidr) {
+        if (sp_ip_matches_cidr($packed, $cidr)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function sp_ip_matches_cidr(string $packedIp, string $cidr): bool
+{
+    [$network, $prefixText] = explode('/', $cidr, 2);
+    $packedNetwork = @inet_pton($network);
+    if ($packedNetwork === false || strlen($packedNetwork) !== strlen($packedIp)) {
+        return false;
+    }
+
+    $prefix = (int)$prefixText;
+    $maxBits = strlen($packedIp) * 8;
+    if ($prefix < 0 || $prefix > $maxBits) {
+        return false;
+    }
+
+    $wholeBytes = intdiv($prefix, 8);
+    if ($wholeBytes > 0 && substr($packedIp, 0, $wholeBytes) !== substr($packedNetwork, 0, $wholeBytes)) {
+        return false;
+    }
+
+    $remainingBits = $prefix % 8;
+    if ($remainingBits === 0) {
+        return true;
+    }
+
+    $mask = (0xff << (8 - $remainingBits)) & 0xff;
+    return (ord($packedIp[$wholeBytes]) & $mask) === (ord($packedNetwork[$wholeBytes]) & $mask);
+}
+
+function sp_validate_resolved_ips(array $ips): array
+{
+    $validated = [];
+    foreach ($ips as $ip) {
+        $ip = trim((string)$ip);
+        if ($ip === '' || !sp_is_public_ip($ip)) {
+            throw new RuntimeException('Die Domain verweist mindestens teilweise auf eine private, lokale oder reservierte IP-Adresse und wird deshalb nicht abgerufen.');
+        }
+        $validated[bin2hex((string)inet_pton($ip))] = $ip;
+    }
+
+    if ($validated === []) {
+        throw new RuntimeException('Die Domain konnte nicht auf eine öffentliche IP-Adresse aufgelöst werden.');
+    }
+
+    return array_values($validated);
+}
+
+function sp_ip_in_list(string $ip, array $allowedIps): bool
+{
+    $packed = @inet_pton($ip);
+    if ($packed === false) {
+        return false;
+    }
+    foreach ($allowedIps as $allowedIp) {
+        if (@inet_pton((string)$allowedIp) === $packed) {
+            return true;
+        }
+    }
+    return false;
 }
 
 function sp_resolve_public_ips(string $host): array
 {
     if (filter_var($host, FILTER_VALIDATE_IP)) {
-        if (!sp_is_public_ip($host)) {
-            throw new RuntimeException('Private, lokale oder reservierte IP-Adressen werden nicht abgerufen.');
-        }
-        return [$host];
+        return sp_validate_resolved_ips([$host]);
     }
 
     $ips = [];
@@ -184,12 +356,31 @@ function sp_resolve_public_ips(string $host): array
         }
     }
 
-    $ips = array_values(array_unique(array_filter($ips, 'sp_is_public_ip')));
-    if ($ips === []) {
-        throw new RuntimeException('Die Domain konnte nicht auf eine öffentliche IP-Adresse aufgelöst werden. Interne/private Ziele werden bewusst blockiert.');
+    return sp_validate_resolved_ips($ips);
+}
+
+function sp_prepare_fetch_target(string $url): array
+{
+    $normalized = sp_normalize_input_url($url);
+    $parts = parse_url($normalized);
+    if ($parts === false) {
+        throw new RuntimeException('Die URL konnte nicht für den Abruf vorbereitet werden.');
     }
 
-    return $ips;
+    $host = strtolower((string)($parts['host'] ?? ''));
+    if (str_starts_with($host, '[') && str_ends_with($host, ']')) {
+        $host = substr($host, 1, -1);
+    }
+    $scheme = strtolower((string)($parts['scheme'] ?? ''));
+    $port = isset($parts['port']) ? (int)$parts['port'] : ($scheme === 'https' ? 443 : 80);
+
+    return [
+        'url' => $normalized,
+        'host' => $host,
+        'port' => $port,
+        'ips' => sp_resolve_public_ips($host),
+        'literal_ip' => filter_var($host, FILTER_VALIDATE_IP) !== false,
+    ];
 }
 
 function sp_absolute_url(string $base, string $relative): string
@@ -272,41 +463,70 @@ function sp_fetch(string $url, int $maxBytes, array $acceptedContentTypes): arra
     }
 
     $current = sp_normalize_input_url($url);
+    $deadline = hrtime(true) + (SHARE_PREVIEW_TOTAL_TIMEOUT * 1_000_000_000);
 
     for ($redirect = 0; $redirect <= SHARE_PREVIEW_MAX_REDIRECTS; $redirect++) {
-        $parts = parse_url($current);
-        $host = strtolower((string)($parts['host'] ?? ''));
-        $scheme = strtolower((string)($parts['scheme'] ?? ''));
-        $port = isset($parts['port']) ? (int)$parts['port'] : ($scheme === 'https' ? 443 : 80);
-        $ips = sp_resolve_public_ips($host);
+        $target = sp_prepare_fetch_target($current);
+        $current = $target['url'];
+        $host = $target['host'];
+        $port = $target['port'];
+        $ips = $target['ips'];
         usort($ips, static fn(string $a, string $b): int => (filter_var($a, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) ? 0 : 1) <=> (filter_var($b, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) ? 0 : 1));
         $ip = $ips[0];
         $resolveIp = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? '[' . $ip . ']' : $ip;
 
+        $remainingMs = (int)floor(($deadline - hrtime(true)) / 1_000_000);
+        if ($remainingMs <= 0) {
+            throw new RuntimeException('Der Abruf hat das gesamte Zeitlimit von ' . SHARE_PREVIEW_TOTAL_TIMEOUT . ' Sekunden überschritten.');
+        }
+
         $headers = [];
         $body = '';
         $tooLarge = false;
+        $headersTooLarge = false;
+        $headerBytes = 0;
 
         $ch = curl_init();
-        curl_setopt_array($ch, [
+        $curlOptions = [
             CURLOPT_URL => $current,
             CURLOPT_RETURNTRANSFER => false,
             CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_CONNECTTIMEOUT => SHARE_PREVIEW_CONNECT_TIMEOUT,
-            CURLOPT_TIMEOUT => SHARE_PREVIEW_TOTAL_TIMEOUT,
-            CURLOPT_USERAGENT => 'SharePreview/' . SHARE_PREVIEW_VERSION . ' (+https://blame76.com/share-preview/)',
+            CURLOPT_MAXREDIRS => 0,
+            CURLOPT_AUTOREFERER => false,
+            CURLOPT_CONNECTTIMEOUT_MS => min(SHARE_PREVIEW_CONNECT_TIMEOUT * 1000, $remainingMs),
+            CURLOPT_TIMEOUT_MS => $remainingMs,
+            CURLOPT_USERAGENT => 'share-preview/' . SHARE_PREVIEW_VERSION,
             CURLOPT_HTTPHEADER => [
                 'Accept: text/html,application/xhtml+xml,image/avif,image/webp,image/*;q=0.9,*/*;q=0.1',
                 'Cache-Control: no-cache',
                 'Pragma: no-cache',
+                'Authorization:',
+                'Cookie:',
             ],
             CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
             CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-            CURLOPT_RESOLVE => [$host . ':' . $port . ':' . $resolveIp],
-            CURLOPT_HEADERFUNCTION => static function ($ch, string $line) use (&$headers): int {
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_UNRESTRICTED_AUTH => false,
+            CURLOPT_HTTPAUTH => CURLAUTH_NONE,
+            CURLOPT_NETRC => CURL_NETRC_IGNORED,
+            CURLOPT_PROXY => '',
+            CURLOPT_NOPROXY => '*',
+            CURLOPT_ENCODING => '',
+            CURLOPT_DNS_CACHE_TIMEOUT => 0,
+            CURLOPT_HEADERFUNCTION => static function ($ch, string $line) use (&$headers, &$headerBytes, &$headersTooLarge, &$tooLarge, $maxBytes): int {
                 $length = strlen($line);
+                $headerBytes += $length;
+                if ($headerBytes > SHARE_PREVIEW_MAX_HEADER_BYTES) {
+                    $headersTooLarge = true;
+                    return 0;
+                }
                 $line = trim($line);
-                if ($line === '' || str_starts_with($line, 'HTTP/')) {
+                if (str_starts_with($line, 'HTTP/')) {
+                    $headers = [];
+                    return $length;
+                }
+                if ($line === '') {
                     return $length;
                 }
                 $pos = strpos($line, ':');
@@ -314,6 +534,10 @@ function sp_fetch(string $url, int $maxBytes, array $acceptedContentTypes): arra
                     $name = strtolower(trim(substr($line, 0, $pos)));
                     $value = trim(substr($line, $pos + 1));
                     $headers[$name][] = $value;
+                    if ($name === 'content-length' && ctype_digit($value) && (int)$value > $maxBytes) {
+                        $tooLarge = true;
+                        return 0;
+                    }
                 }
                 return $length;
             },
@@ -325,22 +549,34 @@ function sp_fetch(string $url, int $maxBytes, array $acceptedContentTypes): arra
                 $body .= $chunk;
                 return strlen($chunk);
             },
-        ]);
+        ];
+        if (!$target['literal_ip']) {
+            $curlOptions[CURLOPT_RESOLVE] = [$host . ':' . $port . ':' . $resolveIp];
+        }
+        curl_setopt_array($ch, $curlOptions);
 
         $ok = curl_exec($ch);
         $errno = curl_errno($ch);
-        $error = curl_error($ch);
         $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         $contentType = (string)curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
         $effectiveUrl = (string)curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+        $primaryIp = (string)curl_getinfo($ch, CURLINFO_PRIMARY_IP);
         curl_close($ch);
+
+        if ($headersTooLarge) {
+            throw new RuntimeException('Die Antwort enthält mehr Headerdaten als das erlaubte Limit.');
+        }
 
         if ($tooLarge) {
             throw new RuntimeException('Die Antwort ist größer als das erlaubte Limit von ' . number_format($maxBytes / 1_000_000, 1, ',', '.') . ' MB.');
         }
 
-        if ($ok === false && $errno !== CURLE_WRITE_ERROR) {
-            throw new RuntimeException('Die Zielseite konnte nicht geladen werden: ' . ($error !== '' ? $error : 'unbekannter Netzwerkfehler') . '.');
+        if ($ok === false) {
+            throw new RuntimeException('Die Zielseite konnte wegen eines Netzwerk- oder TLS-Fehlers nicht geladen werden (cURL-Code ' . $errno . ').');
+        }
+
+        if (!sp_is_public_ip($primaryIp) || !sp_ip_in_list($primaryIp, $ips)) {
+            throw new RuntimeException('Die tatsächlich verwendete Ziel-IP stimmt nicht mit der geprüften öffentlichen DNS-Auflösung überein.');
         }
 
         if ($status >= 300 && $status < 400) {
@@ -361,8 +597,8 @@ function sp_fetch(string $url, int $maxBytes, array $acceptedContentTypes): arra
 
         $normalizedType = strtolower(trim(explode(';', $contentType)[0] ?? ''));
         $accepted = false;
-        foreach ($acceptedContentTypes as $prefix) {
-            if ($normalizedType === $prefix || str_starts_with($normalizedType, $prefix)) {
+        foreach ($acceptedContentTypes as $allowedType) {
+            if ($normalizedType === $allowedType || (str_ends_with($allowedType, '/') && str_starts_with($normalizedType, $allowedType))) {
                 $accepted = true;
                 break;
             }
@@ -388,6 +624,29 @@ function sp_fetch(string $url, int $maxBytes, array $acceptedContentTypes): arra
     throw new RuntimeException('Die Zielseite konnte nicht geladen werden.');
 }
 
+function sp_limit_meta_value(string $value, int $maxBytes): string
+{
+    $value = trim($value);
+    if (strlen($value) <= $maxBytes) {
+        return $value;
+    }
+    return rtrim(substr($value, 0, $maxBytes));
+}
+
+function sp_safe_metadata_url(string $baseUrl, string $candidate): string
+{
+    $candidate = sp_limit_meta_value($candidate, SHARE_PREVIEW_MAX_META_URL_BYTES + 1);
+    if ($candidate === '' || strlen($candidate) > SHARE_PREVIEW_MAX_META_URL_BYTES) {
+        return '';
+    }
+
+    try {
+        return sp_normalize_input_url(sp_absolute_url($baseUrl, $candidate));
+    } catch (Throwable) {
+        return '';
+    }
+}
+
 function sp_first_meta(DOMXPath $xpath, string $attribute, string $value): string
 {
     $query = sprintf('//meta[translate(@%s,"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="%s"]/@content', $attribute, strtolower($value));
@@ -410,10 +669,14 @@ function sp_first_link(DOMXPath $xpath, string $rel): string
 
 function sp_parse_metadata(string $html, string $finalUrl): array
 {
-    libxml_use_internal_errors(true);
-    $dom = new DOMDocument();
-    $loaded = $dom->loadHTML($html, LIBXML_NOWARNING | LIBXML_NOERROR | LIBXML_NONET);
-    libxml_clear_errors();
+    $previousLibxmlErrorMode = libxml_use_internal_errors(true);
+    try {
+        $dom = new DOMDocument();
+        $loaded = $dom->loadHTML($html, LIBXML_NOWARNING | LIBXML_NOERROR | LIBXML_NONET | LIBXML_COMPACT);
+    } finally {
+        libxml_clear_errors();
+        libxml_use_internal_errors($previousLibxmlErrorMode);
+    }
 
     if (!$loaded) {
         throw new RuntimeException('Das HTML der Zielseite konnte nicht verarbeitet werden.');
@@ -423,33 +686,33 @@ function sp_parse_metadata(string $html, string $finalUrl): array
     $title = '';
     $titleNodes = $dom->getElementsByTagName('title');
     if ($titleNodes->length > 0) {
-        $title = trim((string)$titleNodes->item(0)?->textContent);
+        $title = sp_limit_meta_value((string)$titleNodes->item(0)?->textContent, SHARE_PREVIEW_MAX_TITLE_BYTES);
     }
 
-    $description = sp_first_meta($xpath, 'name', 'description');
+    $description = sp_limit_meta_value(sp_first_meta($xpath, 'name', 'description'), SHARE_PREVIEW_MAX_DESCRIPTION_BYTES);
     $canonical = sp_first_link($xpath, 'canonical');
 
     $og = [
-        'title' => sp_first_meta($xpath, 'property', 'og:title'),
-        'description' => sp_first_meta($xpath, 'property', 'og:description'),
+        'title' => sp_limit_meta_value(sp_first_meta($xpath, 'property', 'og:title'), SHARE_PREVIEW_MAX_TITLE_BYTES),
+        'description' => sp_limit_meta_value(sp_first_meta($xpath, 'property', 'og:description'), SHARE_PREVIEW_MAX_DESCRIPTION_BYTES),
         'image' => sp_first_meta($xpath, 'property', 'og:image'),
         'url' => sp_first_meta($xpath, 'property', 'og:url'),
-        'type' => sp_first_meta($xpath, 'property', 'og:type'),
-        'site_name' => sp_first_meta($xpath, 'property', 'og:site_name'),
+        'type' => sp_limit_meta_value(sp_first_meta($xpath, 'property', 'og:type'), 128),
+        'site_name' => sp_limit_meta_value(sp_first_meta($xpath, 'property', 'og:site_name'), 256),
     ];
 
     $twitter = [
-        'card' => sp_first_meta($xpath, 'name', 'twitter:card'),
-        'title' => sp_first_meta($xpath, 'name', 'twitter:title'),
-        'description' => sp_first_meta($xpath, 'name', 'twitter:description'),
+        'card' => sp_limit_meta_value(sp_first_meta($xpath, 'name', 'twitter:card'), 128),
+        'title' => sp_limit_meta_value(sp_first_meta($xpath, 'name', 'twitter:title'), SHARE_PREVIEW_MAX_TITLE_BYTES),
+        'description' => sp_limit_meta_value(sp_first_meta($xpath, 'name', 'twitter:description'), SHARE_PREVIEW_MAX_DESCRIPTION_BYTES),
         'image' => sp_first_meta($xpath, 'name', 'twitter:image'),
-        'site' => sp_first_meta($xpath, 'name', 'twitter:site'),
+        'site' => sp_limit_meta_value(sp_first_meta($xpath, 'name', 'twitter:site'), 256),
     ];
 
-    $canonical = $canonical !== '' ? sp_absolute_url($finalUrl, $canonical) : '';
-    $og['url'] = $og['url'] !== '' ? sp_absolute_url($finalUrl, $og['url']) : '';
-    $og['image'] = $og['image'] !== '' ? sp_absolute_url($finalUrl, $og['image']) : '';
-    $twitter['image'] = $twitter['image'] !== '' ? sp_absolute_url($finalUrl, $twitter['image']) : '';
+    $canonical = sp_safe_metadata_url($finalUrl, $canonical);
+    $og['url'] = sp_safe_metadata_url($finalUrl, $og['url']);
+    $og['image'] = sp_safe_metadata_url($finalUrl, $og['image']);
+    $twitter['image'] = sp_safe_metadata_url($finalUrl, $twitter['image']);
 
     return [
         'document' => [
@@ -484,7 +747,7 @@ function sp_fetch_preview_image(string $url): ?array
     try {
         $result = sp_fetch($url, SHARE_PREVIEW_MAX_IMAGE_BYTES, ['image/']);
         $mime = $result['content_type'];
-        if (!in_array($mime, ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif'], true)) {
+        if (!sp_image_matches_mime($result['body'], $mime)) {
             return null;
         }
 
@@ -496,6 +759,45 @@ function sp_fetch_preview_image(string $url): ?array
     } catch (Throwable) {
         return null;
     }
+}
+
+function sp_image_matches_mime(string $body, string $mime): bool
+{
+    return match ($mime) {
+        'image/jpeg' => str_starts_with($body, "\xff\xd8\xff"),
+        'image/png' => str_starts_with($body, "\x89PNG\r\n\x1a\n"),
+        'image/gif' => str_starts_with($body, 'GIF87a') || str_starts_with($body, 'GIF89a'),
+        'image/webp' => strlen($body) >= 12
+            && str_starts_with($body, 'RIFF')
+            && substr($body, 8, 4) === 'WEBP',
+        'image/avif' => sp_has_avif_signature($body),
+        default => false,
+    };
+}
+
+function sp_has_avif_signature(string $body): bool
+{
+    if (strlen($body) < 16 || substr($body, 4, 4) !== 'ftyp') {
+        return false;
+    }
+
+    $sizeData = unpack('Nsize', substr($body, 0, 4));
+    $boxSize = (int)($sizeData['size'] ?? 0);
+    if ($boxSize < 16 || $boxSize > strlen($body)) {
+        return false;
+    }
+
+    if (in_array(substr($body, 8, 4), ['avif', 'avis'], true)) {
+        return true;
+    }
+
+    for ($offset = 16; $offset + 4 <= $boxSize; $offset += 4) {
+        if (in_array(substr($body, $offset, 4), ['avif', 'avis'], true)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 function sp_analyze_url(string $url): array
