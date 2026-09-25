@@ -106,6 +106,14 @@ code { color: var(--accent); }
 .privacy-note { max-width: 820px; border-top: 1px solid var(--line); padding-top: 32px; }
 .privacy-note p { color: var(--muted); line-height: 1.65; }
 
+.legal-page { max-width: 820px; }
+.legal-page .hero { padding-bottom: 24px; }
+.legal-content { display: grid; gap: 32px; }
+.legal-content section { border-top: 1px solid var(--line); padding-top: 24px; }
+.legal-content h2 { font-size: clamp(1.35rem, 3vw, 1.9rem); }
+.legal-content p, .legal-content li { color: var(--muted); line-height: 1.65; }
+.legal-content ul { padding-left: 1.25rem; }
+
 .selfcheck-page { max-width: 900px; }
 .check-list { display: grid; gap: 12px; }
 .check-card { display: grid; grid-template-columns: 42px 1fr; gap: 14px; padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }

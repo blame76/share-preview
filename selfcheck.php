@@ -53,8 +53,15 @@ $ready = sp_environment_ready();
     <section class="privacy-note">
         <h2>Kein Schreibtest notwendig</h2>
         <p>Share Preview schreibt keine Dateien und benötigt keine beschreibbaren Verzeichnisse. Wenn der Selfcheck grün ist, kannst du direkt zur Startseite zurückgehen und eine öffentliche URL prüfen.</p>
-        <p><strong>Hinweis:</strong> Ein grüner Selfcheck prüft nicht, ob dein Hoster ausgehende HTTP/HTTPS-Verbindungen generell blockiert. Falls ein Abruf später scheitert, zeigt die Anwendung die konkrete Netzwerkfehlermeldung an.</p>
+        <p><strong>Hinweis:</strong> Ein grüner Selfcheck prüft nicht, ob dein Hoster ausgehende HTTP/HTTPS-Verbindungen generell blockiert. Falls ein Abruf später scheitert, zeigt die Anwendung eine verständliche Fehlerkategorie an.</p>
     </section>
 </main>
+<footer>
+    <span>share-preview <?= sp_h(SHARE_PREVIEW_VERSION) ?></span>
+    <span>·</span>
+    <a href="datenschutz.html">Datenschutz</a>
+    <span>·</span>
+    <a href="https://github.com/blame76/share-preview">GitHub</a>
+</footer>
 </body>
 </html>
