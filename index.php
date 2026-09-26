@@ -5,6 +5,7 @@ require __DIR__ . '/inc/app.php';
 sp_send_common_headers();
 
 $selfUrl = sp_self_url();
+$shareImageUrl = $selfUrl . 'assets/share-preview.png';
 $error = null;
 $result = null;
 $inputUrl = '';
@@ -64,9 +65,16 @@ function display_host(string $url): string
     <meta property="og:description" content="Social-Share-Metadaten einer URL prüfen. Keine Accounts, keine Cookies, kein Tracking, keine Speicherung.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="<?= sp_h($selfUrl) ?>">
-    <meta name="twitter:card" content="summary">
+    <meta property="og:image" content="<?= sp_h($shareImageUrl) ?>">
+    <meta property="og:image:type" content="image/png">
+    <meta property="og:image:width" content="1672">
+    <meta property="og:image:height" content="941">
+    <meta property="og:image:alt" content="Share Preview – Social-Share-Metadaten einer URL prüfen">
+    <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Share Preview">
     <meta name="twitter:description" content="Social-Share-Metadaten einer URL prüfen. Keine Accounts, keine Cookies, kein Tracking, keine Speicherung.">
+    <meta name="twitter:image" content="<?= sp_h($shareImageUrl) ?>">
+    <meta name="twitter:image:alt" content="Share Preview – Social-Share-Metadaten einer URL prüfen">
     <link rel="canonical" href="<?= sp_h($selfUrl) ?>">
     <link rel="stylesheet" href="assets/app.css?v=<?= sp_h(sp_asset_version('assets/app.css')) ?>">
     <script src="assets/app.js?v=<?= sp_h(sp_asset_version('assets/app.js')) ?>" defer></script>
